@@ -7,12 +7,16 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   build:
+    name: Compile OSLauncher
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout
+      - name: Download source
         uses: actions/checkout@v4
 
       - name: Setup Java 17
@@ -23,18 +27,40 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 11076708
+          accept-android-sdk-licenses: true
+          packages: |
+            platform-tools
+            platforms;android-34
+            build-tools;34.0.0
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
 
-      - name: Build APK
-        run: gradle assembleDebug --no-daemon
+      - name: Locate project
+        id: project
+        shell: bash
+        run: |
+          if [ -f settings.gradle.kts ]; then
+            echo "dir=." >> "$GITHUB_OUTPUT"
+          elif [ -f OSLauncher/settings.gradle.kts ]; then
+            echo "dir=OSLauncher" >> "$GITHUB_OUTPUT"
+          else
+            echo "Project not found!"
+            exit 1
+          fi
+
+      - name: Build Debug APK
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: gradle --no-daemon --stacktrace assembleDebug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: OSLauncher-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: OSLauncher-APK
+          path: ${{ steps.project.outputs.dir }}/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+          retention-days: 14
