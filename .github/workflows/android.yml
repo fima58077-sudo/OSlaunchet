@@ -12,38 +12,70 @@ permissions:
 
 jobs:
   build:
-    name: Compile OSLauncher
+    name: OSLauncher APK Builder
     runs-on: ubuntu-24.04
 
     steps:
+      # 1. Download project
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # 2. Java 17
       - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
+      # 3. Android SDK configuration
       - name: Configure Android SDK
         shell: bash
         run: |
-          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
-          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=${ANDROID_HOME}" >> "$GITHUB_ENV"
           echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
 
-      - name: Install Android SDK
+          echo "Android SDK: $ANDROID_HOME"
+          ls -la "$ANDROID_HOME"
+
+      # 4. Find SDK Manager
+      - name: Find SDK Manager
+        id: sdk
         shell: bash
         run: |
           SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" \
-            -type f -name sdkmanager | sort | tail -n 1)
+            -type f -name sdkmanager | sort -V | tail -n 1)
 
           if [ -z "$SDKMANAGER" ]; then
-            echo "ERROR: sdkmanager not found"
+            echo "ERROR: SDK Manager not found"
             exit 1
           fi
 
-          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses
+          echo "path=$SDKMANAGER" >> "$GITHUB_OUTPUT"
+          echo "Found: $SDKMANAGER"
+
+      # 5. Accept licenses
+      - name: Accept Android licenses
+        shell: bash
+        run: |
+          set +o pipefail
+
+          yes | "${{ steps.sdk.outputs.path }}" \
+            --sdk_root="$ANDROID_HOME" --licenses
+
+          RESULT=$?
+          set -o pipefail
+
+          if [ "$RESULT" -ne 0 ]; then
+            echo "License acceptance failed"
+            exit "$RESULT"
+          fi
+
+      # 6. Install Android packages
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          SDKMANAGER="${{ steps.sdk.outputs.path }}"
 
           "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
             --install "platform-tools"
@@ -54,32 +86,53 @@ jobs:
           "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
             --install "build-tools;34.0.0"
 
+          echo "SDK installation completed"
+
+      # 7. Verify SDK
+      - name: Verify Android SDK
+        shell: bash
+        run: |
+          test -d "$ANDROID_HOME/platform-tools"
+          test -d "$ANDROID_HOME/platforms/android-34"
+          test -d "$ANDROID_HOME/build-tools/34.0.0"
+
+          echo "Android SDK verified!"
+
+      # 8. Gradle
       - name: Setup Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
 
-      - name: Find Android project
+      # 9. Find project
+      - name: Locate Android project
         id: project
         shell: bash
         run: |
           if [ -f settings.gradle.kts ] || [ -f settings.gradle ]; then
             echo "dir=." >> "$GITHUB_OUTPUT"
+
           elif [ -f OSLauncher/settings.gradle.kts ] || [ -f OSLauncher/settings.gradle ]; then
             echo "dir=OSLauncher" >> "$GITHUB_OUTPUT"
+
           else
             echo "ERROR: Gradle project not found"
+            find . -maxdepth 3 -name settings.gradle -o -name settings.gradle.kts
             exit 1
           fi
 
-      - name: Build APK
+      # 10. Build APK
+      - name: Build OSLauncher APK
+        id: build
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
         run: |
           RESULT=1
 
           for attempt in 1 2 3; do
-            echo "===== BUILD ATTEMPT $attempt/3 ====="
+            echo "================================"
+            echo "BUILD ATTEMPT $attempt / 3"
+            echo "================================"
 
             gradle --no-daemon \
               --stacktrace \
@@ -94,23 +147,24 @@ jobs:
               break
             fi
 
-            echo "Build failed. Attempt: $attempt"
+            echo "Build failed!"
 
             if [ "$attempt" -lt 3 ]; then
-              sleep 10
+              sleep 15
             fi
           done
 
           if [ "$RESULT" -ne 0 ]; then
-            echo "===== ERROR DETAILS ====="
+            echo "========== ERROR DETAILS =========="
 
-            grep -n -A 10 -B 3 -E \
-              "What went wrong|Could not resolve|Could not find|Could not GET|Could not download|UnknownHostException|SocketTimeoutException|PKIX|Failed to" \
-              build.log | tail -120 || tail -100 build.log
+            grep -n -A 12 -B 4 -E \
+              "What went wrong|Could not resolve|Could not find|Could not GET|Could not download|UnknownHostException|SocketTimeoutException|PKIX|Failed to|Execution failed" \
+              build.log | tail -150 || tail -100 build.log
           fi
 
           exit "$RESULT"
 
+      # 11. Upload APK
       - name: Upload APK
         if: success()
         uses: actions/upload-artifact@v4
@@ -120,11 +174,13 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-      - name: Upload build diagnostics
+      # 12. Upload diagnostics
+      - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: OSLauncher-Build-Log
-          path: ${{ steps.project.outputs.dir }}/build.log
+          name: OSLauncher-Diagnostics
+          path: |
+            ${{ steps.project.outputs.dir }}/build.log
           if-no-files-found: ignore
           retention-days: 7
