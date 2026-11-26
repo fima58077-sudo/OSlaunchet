@@ -12,11 +12,11 @@ permissions:
 
 jobs:
   build:
-    name: Build OSLauncher
+    name: Compile OSLauncher
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Setup Java 17
@@ -26,52 +26,105 @@ jobs:
           java-version: '17'
 
       - name: Configure Android SDK
+        shell: bash
         run: |
-          echo "ANDROID_HOME=${ANDROID_HOME}" >> $GITHUB_ENV
-          echo "${ANDROID_HOME}/platform-tools" >> $GITHUB_PATH
-          echo "${ANDROID_HOME}/cmdline-tools/latest/bin" >> $GITHUB_PATH
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
 
-      - name: Install Android SDK packages
+      - name: Install Android SDK
+        shell: bash
         run: |
-          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | head -n 1)
+          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" \
+            -type f -name sdkmanager | sort | tail -n 1)
 
           if [ -z "$SDKMANAGER" ]; then
-            echo "sdkmanager not found"
+            echo "ERROR: sdkmanager not found"
             exit 1
           fi
 
           yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses
 
-          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install "platform-tools"
-          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install "platforms;android-34"
-          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install "build-tools;34.0.0"
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
+            --install "platform-tools"
 
-      - name: Setup Gradle
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
+            --install "platforms;android-34"
+
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" \
+            --install "build-tools;34.0.0"
+
+      - name: Setup Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
 
-      - name: Locate project
+      - name: Find Android project
         id: project
+        shell: bash
         run: |
           if [ -f settings.gradle.kts ] || [ -f settings.gradle ]; then
             echo "dir=." >> "$GITHUB_OUTPUT"
           elif [ -f OSLauncher/settings.gradle.kts ] || [ -f OSLauncher/settings.gradle ]; then
             echo "dir=OSLauncher" >> "$GITHUB_OUTPUT"
           else
-            echo "Gradle project not found"
+            echo "ERROR: Gradle project not found"
             exit 1
           fi
 
       - name: Build APK
         working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
         run: |
-          gradle --no-daemon assembleDebug --stacktrace
+          RESULT=1
+
+          for attempt in 1 2 3; do
+            echo "===== BUILD ATTEMPT $attempt/3 ====="
+
+            gradle --no-daemon \
+              --stacktrace \
+              --console=plain \
+              assembleDebug > build.log 2>&1
+
+            RESULT=$?
+
+            if [ "$RESULT" -eq 0 ]; then
+              echo "BUILD SUCCESSFUL!"
+              tail -40 build.log
+              break
+            fi
+
+            echo "Build failed. Attempt: $attempt"
+
+            if [ "$attempt" -lt 3 ]; then
+              sleep 10
+            fi
+          done
+
+          if [ "$RESULT" -ne 0 ]; then
+            echo "===== ERROR DETAILS ====="
+
+            grep -n -A 10 -B 3 -E \
+              "What went wrong|Could not resolve|Could not find|Could not GET|Could not download|UnknownHostException|SocketTimeoutException|PKIX|Failed to" \
+              build.log | tail -120 || tail -100 build.log
+          fi
+
+          exit "$RESULT"
 
       - name: Upload APK
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: OSLauncher-APK
           path: ${{ steps.project.outputs.dir }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: OSLauncher-Build-Log
+          path: ${{ steps.project.outputs.dir }}/build.log
+          if-no-files-found: ignore
+          retention-days: 7
