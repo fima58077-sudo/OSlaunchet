@@ -12,34 +12,46 @@ permissions:
 
 jobs:
   build:
-    name: Build Android APK
+    name: Build OSLauncher
     runs-on: ubuntu-24.04
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Java
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Configure Android SDK
+        run: |
+          echo "ANDROID_HOME=${ANDROID_HOME}" >> $GITHUB_ENV
+          echo "${ANDROID_HOME}/platform-tools" >> $GITHUB_PATH
+          echo "${ANDROID_HOME}/cmdline-tools/latest/bin" >> $GITHUB_PATH
 
       - name: Install Android SDK packages
         run: |
-          sdkmanager --install "platform-tools"
-          sdkmanager --install "platforms;android-34"
-          sdkmanager --install "build-tools;34.0.0"
+          SDKMANAGER=$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | head -n 1)
+
+          if [ -z "$SDKMANAGER" ]; then
+            echo "sdkmanager not found"
+            exit 1
+          fi
+
+          yes | "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --licenses
+
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install "platform-tools"
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install "platforms;android-34"
+          "$SDKMANAGER" --sdk_root="$ANDROID_HOME" --install "build-tools;34.0.0"
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
 
-      - name: Find project
+      - name: Locate project
         id: project
         run: |
           if [ -f settings.gradle.kts ] || [ -f settings.gradle ]; then
@@ -53,13 +65,13 @@ jobs:
 
       - name: Build APK
         working-directory: ${{ steps.project.outputs.dir }}
-        run: gradle --no-daemon assembleDebug --stacktrace
+        run: |
+          gradle --no-daemon assembleDebug --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: OSLauncher-APK
-          path: |
-            ${{ steps.project.outputs.dir }}/app/build/outputs/apk/debug/*.apk
+          path: ${{ steps.project.outputs.dir }}/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 14
