@@ -120,9 +120,24 @@ jobs:
             find . -maxdepth 3 -name settings.gradle -o -name settings.gradle.kts
             exit 1
           fi
+      - name: Prepare Android resources
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: |
+          for placeholder in \
+            app/src/main/res/values/Nofile \
+            app/src/main/res/mipmap-anydpi-v26/Nofile \
+            app/src/main/res/drawable/Nofile
+          do
+            if [ -f "$placeholder" ]; then
+              rm "$placeholder"
+              echo "Removed temporary placeholder: $placeholder"
+            fi
+          done
+
 
       # 10. Build APK
-      - name: Build OSLauncher APK
+     - name: Build OSLauncher APK
         id: build
         working-directory: ${{ steps.project.outputs.dir }}
         shell: bash
